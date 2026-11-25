@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """One Word, First Thought: write exactly one judged word to /output/entry.txt.
 
-The artifact is written atomically, with mode 0644, as UTF-8 bytes with no
-trailing newline. Standard library only, so it runs in the Python 3.13 sandbox.
+The artifact is written as UTF-8 bytes with no trailing newline and published
+with mode 0644, which the grader requires. Standard library only, so it runs
+in the Python 3.13 sandbox.
 """
 
 from __future__ import annotations
@@ -10,7 +11,6 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
-import tempfile
 from pathlib import Path
 
 WORD = "mooncalf"
@@ -34,39 +34,21 @@ def validated_bytes() -> bytes:
 
 
 def write_artifact(output_dir: Path = OUTPUT_DIR) -> Path:
-    """Atomically publish the artifact and verify its bytes and mode."""
+    """Publish the artifact and verify its exact bytes and mode."""
     data = validated_bytes()
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    # A crashed earlier run may have left a temp file; /output must hold only
-    # the required artifact. Only touch files this program names with its prefix.
-    for stale in output_dir.glob(".entry-*"):
-        if stale.is_file():
-            stale.unlink()
-
     destination = output_dir / ARTIFACT_NAME
-    fd, temp_name = tempfile.mkstemp(prefix=".entry-", dir=str(output_dir))
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        # mkstemp creates 0600, which the grader refuses: fix it BEFORE replace.
-        os.chmod(temp_name, MODE)
-        os.replace(temp_name, destination)
-    except BaseException:
-        try:
-            os.unlink(temp_name)
-        except FileNotFoundError:
-            pass
-        raise
 
-    # Durably record the rename, then check the published file itself.
-    dir_fd = os.open(str(output_dir), os.O_RDONLY)
-    try:
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)
+    # Ask for 0644 at creation so the file is never briefly world-inaccessible,
+    # and refuse a symlink planted at the destination. chmod still forces the
+    # exact mode when the umask is restrictive (or a file already existed).
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+    fd = os.open(destination, flags, MODE)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(destination, MODE)
 
     mode = stat.S_IMODE(destination.stat().st_mode)
     if mode != MODE:
